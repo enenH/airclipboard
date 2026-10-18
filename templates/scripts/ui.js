@@ -28,7 +28,9 @@ class PeersUI {
         if ($(peer.id)) return; // peer already exists
         const peerUI = new PeerUI(peer);
         $$('x-peers').appendChild(peerUI.$el);
-        setTimeout(e => window.animateBackground(false), 1750); // Stop animation
+        setTimeout(() => {
+            if (typeof window.animateBackground === 'function') window.animateBackground(false);
+        }, 1750);
     }
 
     _onPeers(peers) {
@@ -384,7 +386,7 @@ class ReceiveTextDialog extends Dialog {
     }
 
     async _onCopy() {
-        await navigator.clipboard.writeText(this.$text.textContent);
+        await copyClipboardText(this.$text.textContent);
         Events.fire('notify-user', '已复制到剪贴板');
     }
 }
@@ -406,7 +408,7 @@ class Notifications {
 
     constructor() {
         // Check if the browser supports notifications
-        if (!('Notification' in window)) return;
+        if (!window.isSecureContext || !('Notification' in window)) return;
 
         // Check whether notification permissions have already been granted
         if (Notification.permission !== 'granted') {
@@ -485,7 +487,7 @@ class Notifications {
 
     _copyText(message, notification) {
         notification.close();
-        if (!navigator.clipboard.writeText(message)) return;
+        if (!copyClipboardText(message)) return;
         this._notify('Copied text to clipboard');
     }
 
@@ -531,7 +533,8 @@ class WebShareTargetUI {
 
         if (!shareTargetText) return;
         window.shareTargetText = shareTargetText;
-        history.pushState({}, 'URL Rewrite', '/');
+        for (const key of ['title', 'text', 'url']) parsedUrl.searchParams.delete(key);
+        history.replaceState({}, '', parsedUrl.href);
         console.log('Shared Target Text:', '"' + shareTargetText + '"');
     }
 }
@@ -560,12 +563,12 @@ class Snapdrop {
 
 const snapdrop = new Snapdrop();
 
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/service-worker.js')
+if (window.isSecureContext && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register(AirClipboard.asset('service-worker.js'))
         .then(serviceWorker => {
             console.log('Service Worker registered');
             window.serviceWorker = serviceWorker
-        });
+        }).catch(error => console.warn('Service Worker unavailable', error));
 }
 
 window.addEventListener('beforeinstallprompt', e => {

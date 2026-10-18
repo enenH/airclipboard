@@ -15,7 +15,10 @@ class ServerConnection {
         if (this._isConnected() || this._isConnecting()) return;
         const ws = new WebSocket(this._endpoint());
         ws.binaryType = 'arraybuffer';
-        ws.onopen = e => console.log('WS: server connected');
+        ws.onopen = e => {
+            console.log('WS: server connected');
+            fetchMessages();
+        };
         ws.onmessage = e => this._onMessage(e.data);
         ws.onclose = e => this._onDisconnect();
         ws.onerror = e => console.error(e);
@@ -38,6 +41,9 @@ class ServerConnection {
             case 'signal':
                 Events.fire('signal', msg);
                 break;
+            case 'relay':
+                Events.fire('relay', msg);
+                break;
             case 'ping':
                 this.send({type: 'pong', board: window.board});
                 break;
@@ -58,13 +64,7 @@ class ServerConnection {
     }
 
     _endpoint() {
-        // hack to detect if deployment or development environment
-        const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-        const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
-        const url = protocol + '://' + location.host + '/server' + webrtc;
-        // const url = 'ws://192.168.2.10:18129/server/webrtc';
-
-        return url;
+        return AirClipboard.websocket();
     }
 
     _disconnect() {
@@ -374,7 +374,17 @@ class PeersManager {
         this.peers = {};
         this._server = serverConnection;
         Events.on('signal', e => this._onMessage(e.detail));
+        Events.on('relay', e => {
+            const message = e.detail;
+            if (!(this.peers[message.sender] instanceof WSPeer)) {
+                this.peers[message.sender] = new WSPeer(this._server, message.sender);
+            }
+            this.peers[message.sender].receive(message);
+        });
         Events.on('peers', e => this._onPeers(e.detail));
+        Events.on('peer-joined', e => {
+            if (!window.isRtcSupported || !e.detail.rtcSupported) this._onPeers([e.detail]);
+        });
         Events.on('files-selected', e => this._onFilesSelected(e.detail));
         Events.on('send-text', e => this._onSendText(e.detail));
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
@@ -422,10 +432,27 @@ class PeersManager {
 
 }
 
-class WSPeer {
+class WSPeer extends Peer {
+    constructor(serverConnection, peerId) {
+        super(serverConnection, peerId);
+        setTimeout(() => Events.fire('peer-rtc-connected', peerId), 0);
+    }
+
+    refresh() {}
+
     _send(message) {
-        message.to = this._peerId;
-        this._server.send(message);
+        const binary = typeof message !== 'string';
+        const data = binary
+            ? btoa(Array.from(new Uint8Array(message), byte => String.fromCharCode(byte)).join(''))
+            : message;
+        this._server.send({type: 'relay', to: this._peerId, binary, data});
+    }
+
+    receive(message) {
+        const data = message.binary
+            ? Uint8Array.from(atob(message.data), char => char.charCodeAt(0)).buffer
+            : message.data;
+        this._onMessage(data);
     }
 }
 

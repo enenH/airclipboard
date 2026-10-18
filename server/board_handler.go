@@ -9,11 +9,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"regexp"
 	"sort"
+	"sync"
 	"time"
 )
+
+var boardMu sync.Mutex
+var BoardChanged = func(string) {}
 
 const (
 	MaxMessageSize = 5
@@ -47,6 +52,8 @@ func LogApiRequestIP(c *gin.Context, apiName string, userId int64) string {
 }
 
 func AddMessage(c *gin.Context) {
+	boardMu.Lock()
+	defer boardMu.Unlock()
 	board := c.Param("board")
 	if board == "" {
 		common.ErrorStrResp(c, "board not found ！", http.StatusNotFound)
@@ -55,7 +62,7 @@ func AddMessage(c *gin.Context) {
 
 	realIp := LogApiRequestIP(c, "AddMessage: "+board, -1)
 
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 30<<20))
 	if err != nil {
 		log.Printf("添加标签页失败，err=%v", err)
 		common.ErrorStrResp(c, "请求失败！", http.StatusBadRequest)
@@ -75,56 +82,70 @@ func AddMessage(c *gin.Context) {
 		return
 	}
 
-	if msgs, ok := cache.GetFromCache(board); !ok {
-		common.ErrorStrResp(c, "抱歉，由于服务器资源有限，当前剪切板数量已达上限，将为您自动跳转到public剪切板空间！", http.StatusBadRequest)
-		return
-	} else {
-		isFile, fileName, fileType, base64Str := checkContentIsFile(req.Content)
-
-		newMsg := &cache.Message{
-			Content:  base64Str,
-			Time:     time.Now().Format("2006-01-02 15:04:05"),
-			Ip:       realIp,
-			Id:       fmt.Sprintf("%v", time.Now().UnixNano()), // 时间戳
-			IsFile:   isFile,
-			FileName: fileName,
-			FileType: fileType,
+	msgs, ok := cache.GetFromCache(board)
+	if !ok {
+		if board != "public" && cache.CacheSize() >= MaxBoardSize {
+			common.ErrorStrResp(c, "剪贴板数量已达上限，请稍后再试", http.StatusBadRequest)
+			return
 		}
-
-		msgs = append(msgs, newMsg)
-
-		// msgs根据Time时间倒序排序
-		sort.Slice(msgs, func(i, j int) bool {
-			return msgs[i].Id > msgs[j].Id
-		})
-
-		// 只保留最新的10条数据
-		if len(msgs) > MaxMessageSize {
-			msgs = msgs[:MaxMessageSize]
+		msgs = make([]*cache.Message, 0)
+	}
+	isFile, fileName, fileType, base64Str := checkContentIsFile(req.Content)
+	if isFile {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(base64Str)
+		if decodeErr != nil || len(decoded) > 20<<20 {
+			common.ErrorStrResp(c, "文件无效或超过 20MB", http.StatusBadRequest)
+			return
 		}
-
-		cache.SetToCache(board, msgs, time.Hour*6)
-
-		returnMsg := &cache.Message{
-			Content:  "",
-			Time:     newMsg.Time,
-			Ip:       realIp,
-			Id:       newMsg.Id, // 时间戳
-			IsFile:   isFile,
-			FileName: fileName,
-			FileType: fileType,
-		}
-		if !isFile {
-			returnMsg.Content = newMsg.Content
-		}
-
-		common.SuccessResp(c, BoardInfo{
-			Board:    board,
-			ExpireAt: cache.GetExpireAt(board),
-			Messages: []*cache.Message{returnMsg},
-		})
+	} else if len(req.Content) > 20<<20 {
+		common.ErrorStrResp(c, "文本超过 20MB", http.StatusBadRequest)
 		return
 	}
+
+	newMsg := &cache.Message{
+		Content:  base64Str,
+		Time:     time.Now().Format("2006-01-02 15:04:05"),
+		Ip:       realIp,
+		Id:       fmt.Sprintf("%v", time.Now().UnixNano()), // 时间戳
+		IsFile:   isFile,
+		FileName: fileName,
+		FileType: fileType,
+	}
+
+	msgs = append(msgs, newMsg)
+
+	// msgs根据Time时间倒序排序
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Id > msgs[j].Id
+	})
+
+	// 只保留最新的10条数据
+	if len(msgs) > MaxMessageSize {
+		msgs = msgs[:MaxMessageSize]
+	}
+
+	cache.SetToCache(board, msgs, time.Hour*6)
+	BoardChanged(board)
+
+	returnMsg := &cache.Message{
+		Content:  "",
+		Time:     newMsg.Time,
+		Ip:       realIp,
+		Id:       newMsg.Id, // 时间戳
+		IsFile:   isFile,
+		FileName: fileName,
+		FileType: fileType,
+	}
+	if !isFile {
+		returnMsg.Content = newMsg.Content
+	}
+
+	common.SuccessResp(c, BoardInfo{
+		Board:    board,
+		ExpireAt: cache.GetExpireAt(board),
+		Messages: []*cache.Message{returnMsg},
+	})
+	return
 }
 func GetMessage(c *gin.Context) {
 	board := c.Param("board")
@@ -155,11 +176,15 @@ func GetMessage(c *gin.Context) {
 						return
 					}
 					c.Header("Content-Type", msg.FileType)
+					c.Header("X-Content-Type-Options", "nosniff")
+					if c.Query("download") == "1" {
+						c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": msg.FileName}))
+					}
 					c.Data(http.StatusOK, msg.FileType, data)
 					return
 				} else {
 					c.Header("Content-Type", "text/plain; charset=utf-8")
-					c.String(http.StatusOK, msg.FileType, msg.Content)
+					c.String(http.StatusOK, "%s", msg.Content)
 					return
 				}
 			}
@@ -170,6 +195,8 @@ func GetMessage(c *gin.Context) {
 }
 
 func DeleteMessage(c *gin.Context) {
+	boardMu.Lock()
+	defer boardMu.Unlock()
 	board := c.Param("board")
 	if board == "" {
 		common.ErrorStrResp(c, "board not found ！", http.StatusNotFound)
@@ -202,6 +229,7 @@ func DeleteMessage(c *gin.Context) {
 				cache.SetToCache(board, msgs, time.Hour*6)
 			}
 		}
+		BoardChanged(board)
 		returnMsgs := make([]*cache.Message, 0)
 		for _, msg := range msgs {
 			if msg == nil {
@@ -246,6 +274,8 @@ func checkContentIsFile(content string) (isFile bool, fileName, fileType, base64
 }
 
 func FetchBoard(c *gin.Context) {
+	boardMu.Lock()
+	defer boardMu.Unlock()
 	board := c.Param("board")
 	if board == "" {
 		common.ErrorStrResp(c, "Sorry, board not found!", http.StatusNotFound)

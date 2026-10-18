@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 	"unicode"
 )
@@ -27,8 +28,11 @@ func main() {
 	redisAddr := flag.String("redis-addr", "localhost:6379", "Address of the Redis server")
 	redisPassword := flag.String("redis-password", "******", "Password for the Redis server")
 	redisDB := flag.Int("redis-db", 0, "Redis database number")
+	listen := flag.String("listen", "0.0.0.0:18128", "HTTP listen address")
+	origins := flag.String("allowed-origins", "http://ac.enenh.com,http://103.236.77.86:32347", "Comma-separated browser origins")
 
 	flag.Parse()
+	server.SetAllowedOrigins(strings.Split(*origins, ","))
 
 	slog.Init() // 日志初始化
 
@@ -41,10 +45,11 @@ func main() {
 	cache.InitCache(config)
 
 	r := gin.New()
+	r.Use(gin.Recovery())
 	initRoute(r)
-	base := fmt.Sprintf("%s:%d", "0.0.0.0", 18128)
+	base := *listen
 	log.Printf("Start server @ %s", base)
-	srv := &http.Server{Addr: base, Handler: r}
+	srv := &http.Server{Addr: base, Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	err := srv.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to start: %s", err.Error())
@@ -54,9 +59,12 @@ func main() {
 func initRoute(e *gin.Engine) {
 	Cors(e)
 	peerServer := server.NewPeerServer()
+	server.BoardChanged = func(board string) { go peerServer.NotifyBoard(board) }
+	e.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	e.GET("/server/webrtc", func(c *gin.Context) {
 		peerServer.HandleConnection(c)
 	})
+	e.GET("/server/fallback", peerServer.HandleConnection)
 
 	// 静态文件路由
 	e.GET("/service-worker.js", func(c *gin.Context) {
@@ -97,7 +105,7 @@ func initRoute(e *gin.Engine) {
 				// 生成6位随机字符串，只包含数字和小写字母
 				board = common.RandString(6)
 			}
-			c.Header("Set-Cookie", "board="+board+";SameSite=Strict;Secure")
+			c.SetCookie("board", board, 172800, "/", "", c.Request.TLS != nil, false)
 		}
 		cache.SetBoardNameToCache(realIp, board, time.Hour*48)
 		c.HTML(200, "index.html", gin.H{"Board": board})
@@ -110,7 +118,7 @@ func initRoute(e *gin.Engine) {
 			// 生成6位随机字符串，只包含数字和小写字母
 			board = common.RandString(6)
 		}
-		c.Header("Set-Cookie", "board="+board+";SameSite=Strict;Secure")
+		c.SetCookie("board", board, 172800, "/", "", c.Request.TLS != nil, false)
 		c.HTML(200, "index.html", gin.H{"Board": board})
 	})
 
@@ -123,9 +131,9 @@ func initRoute(e *gin.Engine) {
 
 func Cors(r *gin.Engine) {
 	config := cors.DefaultConfig()
-	config.AllowAllOrigins = true
-	config.AllowHeaders = []string{"*"}
-	config.AllowMethods = []string{"*"}
+	config.AllowOriginFunc = server.IsAllowedOrigin
+	config.AllowHeaders = []string{"Content-Type", "Accept"}
+	config.AllowMethods = []string{"GET", "POST", "DELETE", "OPTIONS"}
 	r.Use(cors.New(config))
 }
 

@@ -40,7 +40,7 @@ func ErrorWithDataResp(c *gin.Context, err error, code int, data interface{}, l 
 
 func ErrorStrResp(c *gin.Context, str string, code int, l ...bool) {
 	if len(l) != 0 && l[0] {
-		log.Printf(str)
+		log.Printf("%s", str)
 	}
 	c.JSON(200, Resp[interface{}]{
 		Code:    code,

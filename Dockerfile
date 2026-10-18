@@ -1,4 +1,4 @@
-FROM golang:1.19-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /app
 COPY . .
 ENV GOPROXY=https://goproxy.cn,direct

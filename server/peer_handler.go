@@ -1,6 +1,7 @@
 package server
 
 import (
+	"airclipboard/common"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,32 +37,31 @@ var (
 )
 
 type PeerName struct {
-	model       string `json:"model"`
-	os          string `json:"os"`
-	browser     string `json:"browser"`
-	deviceType  string `json:"type"`
-	deviceName  string `json:"deviceName"`
-	displayName string `json:"displayName"`
+	model       string
+	os          string
+	browser     string
+	deviceType  string
+	deviceName  string
+	displayName string
 }
 
 type Peer struct {
-	socket       *websocket.Conn `json:"-"`
-	ip           string          `json:"-"`
-	id           string          `json:"id"`
-	rtcSupported bool            `json:"rtcSupported"`
-	name         *PeerName       `json:"name"`
-	board        string          `json:"board"`
-	lastBeat     time.Time       `json:"-"`
-	timer        *time.Timer     `json:"-"`
+	socket       *websocket.Conn
+	ip           string
+	id           string
+	rtcSupported bool
+	name         *PeerName
+	board        string
+	lastBeat     atomic.Int64
+	closeOnce    sync.Once
 
-	cancelKeepAlive chan struct{} `json:"-"`
-	mu              sync.Mutex    `json:"-"`
+	cancelKeepAlive chan struct{}
+	mu              sync.Mutex
 }
 
 type PeerServer struct {
 	upgrader websocket.Upgrader
 	rooms    map[string]map[string]*Peer
-	boards   map[string]map[string]map[string]bool
 	mu       sync.Mutex
 }
 
@@ -68,6 +69,8 @@ type PeerServer struct {
 func NewPeer(socket *websocket.Conn, c *gin.Context) *Peer {
 	newPeer := &Peer{
 		socket:          socket,
+		id:              c.GetString("peerID"),
+		board:           common.NormalizeBoard(c.Query("board")),
 		cancelKeepAlive: make(chan struct{}),
 	}
 
@@ -78,11 +81,11 @@ func NewPeer(socket *websocket.Conn, c *gin.Context) *Peer {
 		newPeer.ip = "127.0.0.1"
 	}
 	// peerId由PeerServer生成，写入Cookie
-	if peerId, err := c.Cookie("peerid"); err == nil {
-		newPeer.id = peerId
+	if newPeer.board == "" {
+		newPeer.board = "public"
 	}
 	// set rtcSupported
-	if strings.Index(c.Request.URL.String(), "webrtc") > -1 {
+	if strings.Contains(c.Request.URL.Path, "/webrtc") {
 		newPeer.rtcSupported = true
 	} else {
 		newPeer.rtcSupported = false
@@ -129,7 +132,7 @@ func NewPeer(socket *websocket.Conn, c *gin.Context) *Peer {
 		displayName: displayName,             // 显示名称
 	}
 
-	newPeer.lastBeat = time.Now()
+	newPeer.lastBeat.Store(time.Now().UnixNano())
 
 	return newPeer
 }
@@ -150,246 +153,152 @@ func (p *Peer) getInfo() map[string]interface{} {
 	}
 }
 
-// NewPeerServer creates a new PeerServer
+// NewPeerServer groups devices by their explicitly selected clipboard space.
+// Reverse-proxied visitors must not all share an IP-based room.
 func NewPeerServer() *PeerServer {
 	return &PeerServer{
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
+			ReadBufferSize: 1024, WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				return true
+				origin := r.Header.Get("Origin")
+				return origin == "" || IsAllowedOrigin(origin)
 			},
 		},
-		rooms:  make(map[string]map[string]*Peer),           // room -> id -> peer
-		boards: make(map[string]map[string]map[string]bool), // board -> room -> id -> bool
+		rooms: make(map[string]map[string]*Peer),
 	}
 }
 
-// HandleConnection handles a new peer connection
 func (s *PeerServer) HandleConnection(c *gin.Context) {
-	// Check if peerid cookie exists, if not generate a new peerId
-	var peerId string
-	// Check if peerid cookie exists
-	if cookie, err := c.Request.Cookie("peerid"); err == nil && cookie.Value != "" {
-		//log.Println("Cookie peerid found:", cookie.Value)
-		peerId = cookie.Value
-	} else {
-		// Generate a new peerId if cookie doesn't exist
-		peerId = uuid.NewString()
-		c.Header("Set-Cookie", "peerid="+peerId+";SameSite=Strict;Secure")
-		//log.Println("Set Cookie peerid:", peerId)
-	}
-
-	// Upgrade the connection to a websocket connection
-	socket, err := s.upgrader.Upgrade(c.Writer, c.Request, c.Writer.Header())
+	c.Set("peerID", uuid.NewString())
+	socket, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Println("Upgrade error:", err)
+		log.Printf("WebSocket upgrade: %v", err)
 		return
 	}
-	defer socket.Close()
-
-	// Create a new Peer instance
+	socket.SetReadLimit(256 << 10)
 	peer := NewPeer(socket, c)
-	peer.id = peerId
 	s.joinRoom(peer)
-
-	// Start a goroutine to keep the connection alive
+	defer s.leaveRoom(peer)
 	go s.keepAlive(peer)
-
-	// Send a display-name message to the peer
 	s.send(peer, map[string]interface{}{
-		"type": "display-name",
-		"message": map[string]string{
-			"displayName": peer.name.displayName,
-			"deviceName":  peer.name.deviceName,
-		},
+		"type":    "display-name",
+		"message": map[string]string{"displayName": peer.name.displayName, "deviceName": peer.name.deviceName},
 	})
-
-	// Read messages from the socket
 	for {
 		_, message, err := socket.ReadMessage()
 		if err != nil {
-			//log.Println("Read error:", err)
-			s.leaveRoom(peer)
-			break
+			return
 		}
-		// Handle the received message
 		s.handleMessage(peer, message)
 	}
-
-	// Cancel the keep alive goroutine
-	s.cancelKeepAlive(peer)
 }
 
 func (s *PeerServer) joinRoom(peer *Peer) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// if room doesn't exist, create it
-	if _, exists := s.rooms[peer.ip]; !exists {
-		s.rooms[peer.ip] = make(map[string]*Peer)
+	if s.rooms[peer.board] == nil {
+		s.rooms[peer.board] = make(map[string]*Peer)
 	}
-
-	// add peer to room
-	s.rooms[peer.ip][peer.id] = peer
-	log.Printf("Peer joined: %s (ID: %s, Board: %s)", peer.ip, peer.id, peer.board)
-
-	// Notify other peers in the room
-	for _, otherPeer := range s.rooms[peer.ip] {
-		if otherPeer.id != peer.id {
-			s.send(otherPeer, map[string]interface{}{
-				"type": "peer-joined",
-				"peer": peer.getInfo(),
-			})
-		}
+	others := make([]*Peer, 0, len(s.rooms[peer.board]))
+	for _, other := range s.rooms[peer.board] {
+		others = append(others, other)
 	}
-
-	// Send current peers to the new peer
-	peers := make([]map[string]interface{}, 0, len(s.rooms[peer.ip])-1)
-	for _, otherPeer := range s.rooms[peer.ip] {
-		if otherPeer.id != peer.id {
-			peers = append(peers, otherPeer.getInfo())
-		}
+	s.rooms[peer.board][peer.id] = peer
+	s.mu.Unlock()
+	peers := make([]map[string]interface{}, 0, len(others))
+	for _, other := range others {
+		peers = append(peers, other.getInfo())
+		s.send(other, map[string]interface{}{"type": "peer-joined", "peer": peer.getInfo()})
 	}
-	s.send(peer, map[string]interface{}{
-		"type":  "peers",
-		"peers": peers,
-	})
+	s.send(peer, map[string]interface{}{"type": "peers", "peers": peers})
 }
 
 func (s *PeerServer) leaveRoom(peer *Peer) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// remove peer from room
-	if room, exists := s.rooms[peer.ip]; exists {
-		if _, peerExists := room[peer.id]; !peerExists {
-			return
-		}
-		s.cancelKeepAlive(peer)
+	peer.closeOnce.Do(func() {
+		close(peer.cancelKeepAlive)
 		peer.socket.Close()
+		s.mu.Lock()
+		room := s.rooms[peer.board]
 		delete(room, peer.id)
-		log.Printf("Peer left: %s (ID: %s, Board: %s)", peer.ip, peer.id, peer.board)
-
+		others := make([]*Peer, 0, len(room))
+		for _, other := range room {
+			others = append(others, other)
+		}
 		if len(room) == 0 {
-			// if room is empty, remove it
-			delete(s.rooms, peer.ip)
-		} else {
-			// notify all other peers
-			for _, otherPeer := range room {
-				s.send(otherPeer, map[string]interface{}{
-					"type":   "peer-left",
-					"peerId": peer.id,
-				})
-			}
+			delete(s.rooms, peer.board)
 		}
-	}
+		s.mu.Unlock()
+		for _, other := range others {
+			s.send(other, map[string]interface{}{"type": "peer-left", "peerId": peer.id})
+		}
+	})
+}
 
-	if peer.board != "" {
-		delete(s.boards[peer.board][peer.ip], peer.id)
-		if len(s.boards[peer.board][peer.ip]) == 0 {
-			delete(s.boards[peer.board], peer.ip)
-		}
-		if len(s.boards[peer.board]) == 0 {
-			delete(s.boards, peer.board)
-		}
+func (s *PeerServer) NotifyBoard(board string) {
+	s.mu.Lock()
+	peers := make([]*Peer, 0, len(s.rooms[board]))
+	for _, peer := range s.rooms[board] {
+		peers = append(peers, peer)
+	}
+	s.mu.Unlock()
+	for _, peer := range peers {
+		s.send(peer, map[string]interface{}{"type": "board-update", "board": board})
 	}
 }
 
 func (s *PeerServer) handleMessage(sender *Peer, message []byte) {
 	var msg map[string]interface{}
-	if err := json.Unmarshal(message, &msg); err != nil {
-		log.Println("Unmarshal error:", err)
+	if json.Unmarshal(message, &msg) != nil {
 		return
 	}
-
+	sender.lastBeat.Store(time.Now().UnixNano())
 	switch msg["type"] {
 	case "disconnect":
 		s.leaveRoom(sender)
+		return
 	case "pong":
-		sender.lastBeat = time.Now()
-		board, _ := msg["board"].(string)
-		sender.board = board
-		s.mu.Lock()
-		if _, exists := s.boards[board]; !exists {
-			s.boards[board] = make(map[string]map[string]bool)
-		}
-		if _, exists := s.boards[board][sender.ip]; !exists {
-			s.boards[board][sender.ip] = make(map[string]bool)
-		}
-		s.boards[board][sender.ip][sender.id] = true
-		log.Printf("Receive pong from board=%s, ip=%v, id=%v", board, sender.ip, sender.id)
-		s.mu.Unlock()
+		return
 	case "board-update":
-		sender.lastBeat = time.Now()
-		board, _ := msg["board"].(string)
-		//log.Printf("Receive board-update from board=%s, ip=%v, id=%v", board, sender.ip, sender.id)
-		if peers, exists := s.boards[board]; exists {
-			for ip, ids := range peers {
-				if room, exists := s.rooms[ip]; exists {
-					for id := range ids {
-						if id != sender.id {
-							s.send(room[id], map[string]interface{}{
-								"type":  "board-update",
-								"board": board,
-							})
-						}
-					}
-				}
-			}
-		}
+		s.NotifyBoard(sender.board)
+		return
 	}
-
-	// RTC message tp specified peer
-	if to, exists := msg["to"]; exists {
-		recipientId, _ := to.(string)
-		if room, exists := s.rooms[sender.ip]; exists {
-			if recipient, exists := room[recipientId]; exists {
-				msg["sender"] = sender.id
-				delete(msg, "to")
-				s.send(recipient, msg)
-			}
-		}
+	recipientID, ok := msg["to"].(string)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	recipient := s.rooms[sender.board][recipientID]
+	s.mu.Unlock()
+	if recipient != nil {
+		msg["sender"] = sender.id
+		delete(msg, "to")
+		s.send(recipient, msg)
 	}
 }
 
 func (s *PeerServer) send(peer *Peer, message map[string]interface{}) {
-	if peer == nil {
-		return
-	}
-
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
-
+	peer.socket.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := peer.socket.WriteJSON(message); err != nil {
-		log.Printf("Write msssage:%v error:%v", message, err)
+		log.Printf("WebSocket write: %v", err)
 	}
 }
 
 func (s *PeerServer) keepAlive(peer *Peer) {
 	s.send(peer, map[string]interface{}{"type": "ping", "board": peer.board})
-
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ticker.C:
-			if peer.lastBeat.Add(60 * time.Second).Before(time.Now()) {
+			if time.Since(time.Unix(0, peer.lastBeat.Load())) > 60*time.Second {
 				s.leaveRoom(peer)
 				return
 			}
 			s.send(peer, map[string]interface{}{"type": "ping", "board": peer.board})
 		case <-peer.cancelKeepAlive:
-			//log.Println("KeepAlive canceled for peer:", peer.id)
 			return
 		}
-	}
-}
-
-func (s *PeerServer) cancelKeepAlive(peer *Peer) {
-	if peer != nil && peer.cancelKeepAlive != nil && !isClosed(peer.cancelKeepAlive) {
-		close(peer.cancelKeepAlive)
 	}
 }
 

@@ -59,7 +59,7 @@ func (c *RedisCache) GetExpireAt(key string) string {
 	}
 
 	expireAt := time.Now().Add(ttl)
-	return expireAt.Format("2006-01-02 15:04:05")
+	return expireAt.Format(time.RFC3339)
 }
 
 func (c *RedisCache) Set(key string, data []*Message, duration time.Duration) {

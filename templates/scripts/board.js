@@ -1,6 +1,24 @@
 NProgress.configure({showSpinner: false});
 
-const version = 'v2.3.1-20240926';
+const version = 'v2.3.1-http';
+
+function boardAPI(id) {
+    return AirClipboard.api('/boardapi/' + encodeURIComponent(board) + (id ? '/' + encodeURIComponent(id) : ''));
+}
+
+async function downloadMessage(message) {
+    const response = await fetch(boardAPI(message.id));
+    if (!response.ok) throw new Error('Download failed: ' + response.status);
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = message.fileName || 'download';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 
 window.collapsed = false
 
@@ -50,6 +68,8 @@ const contentData = {
         </div>
         <div>
             <button id="sendButton" class="btn btn-primary" data-i18n="send" style="width: 100px">发送</button>
+            <button id="uploadButton" type="button" class="btn btn-secondary" data-i18n="upload-file">上传文件</button>
+            <input id="fileInput" type="file" multiple hidden>
         </div>
         <span style="color: red; font-size: 12px;"
               data-i18n="declaration">声明：请勿在此传输涉及重要机密或个人隐私的信息。如造成信息泄露、丢失或其他任何后果，AirClipboard 概不承担责任！
@@ -118,6 +138,8 @@ const contentData = {
             </div>
             <div>
                 <button id="sendButton" class="btn btn-primary" data-i18n="send" style="width: 100px">发送</button>
+            <button id="uploadButton" type="button" class="btn btn-secondary" data-i18n="upload-file">上传文件</button>
+            <input id="fileInput" type="file" multiple hidden>
             </div>
             <span style="color: red; font-size: 12px;"
                   data-i18n="declaration">声明：请勿在此传输涉及重要机密或个人隐私的信息。如造成信息泄露、丢失或其他任何后果，AirClipboard 概不承担责任！
@@ -129,7 +151,7 @@ const contentData = {
             <div>
                 <ul id="messages" class="messages"></ul>
             </div>
-    
+
             <div style="margin-bottom: 2rem;">
                 <p style="text-align: center; font-size: 10px;">
                     Powered by <a target="_blank" href="https://github.com/r0n9/airclipboard">AirClipboard</a>
@@ -153,24 +175,17 @@ function addMessageInputListener(event) {
     });
 
     document.getElementById("sendButton").addEventListener("click", addMessage);
+    document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('fileInput').click());
+    document.getElementById('fileInput').addEventListener('change', async event => {
+        for (const file of event.target.files) await uploadFile(file);
+        event.target.value = '';
+    });
 
     document.getElementById('messageInput').addEventListener('paste', function (event) {
         const items = (event.clipboardData || event.originalEvent.clipboardData).items;
         const maxSize = 20 * 1024 * 1024; // 20MB
 
-        const handleFile = (file) => {
-            if (file.size > maxSize) {
-                alert('The file size exceeds the 20MB limit.');
-                return;
-            }
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const base64Image = e.target.result;
-                const message = `${file.name}#${base64Image}`;
-                sendMessage(message);
-            };
-            reader.readAsDataURL(file);
-        };
+        const handleFile = file => uploadFile(file);
 
         const handleText = (item) => {
             item.getAsString((text) => {
@@ -219,9 +234,26 @@ function addMessageInputListener(event) {
     }
 }
 
+function uploadFile(file) {
+    if (!file || file.size > 20 * 1024 * 1024) {
+        alert('文件不能超过 20MB / Maximum file size: 20MB');
+        return Promise.resolve();
+    }
+    return new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const result = String(reader.result).replace(/^data:;base64,/, 'data:application/octet-stream;base64,');
+            await sendMessage(`${file.name}#${result}`);
+            resolve();
+        };
+        reader.onerror = () => { alert('无法读取文件 / Cannot read file'); resolve(); };
+        reader.readAsDataURL(file);
+    });
+}
+
 function fetchMessages() {
     NProgress.start();
-    fetch('/boardapi/' + board)
+    fetch(boardAPI())
         .then(response => response.json())
         .then(data => {
             if (data.code == 200) {
@@ -261,9 +293,7 @@ function fetchMessages() {
             } else {
                 console.error('Error fetching messages:', data);
                 alert(data.message);
-                const currentUrl = new URL(window.location.href);
-                const newPath = currentUrl.pathname.replace(/[^/]+$/, "public");
-                window.location.href = `${currentUrl.origin}${newPath}`;
+                if (board !== 'public') window.location.href = AirClipboard.boardURL('public');
             }
         })
         .catch(error => console.error('Error fetching messages:', error))
@@ -284,7 +314,7 @@ function addMessage() {
 
 function sendMessage(content) {
     NProgress.start();
-    fetch('/boardapi/' + board, {
+    return fetch(boardAPI(), {
         method: 'POST', headers: {
             'Content-Type': 'application/json'
         }, body: JSON.stringify({content: content})
@@ -297,8 +327,8 @@ function sendMessage(content) {
                     card.style.backgroundColor = 'var(--bg-color)';
                 }
                 updateCountdown(data.data.expireAt)
-                appendMessage(data.data.messages[0], true);
-                snapdrop.send({type: 'board-update', board: window.board})
+                fetchMessages();
+
                 if (language == 'zh') {
                     Events.fire('notify-user', '剪贴板记录添加成功');
                 } else {
@@ -336,7 +366,7 @@ function appendMessage(message, appendMessageToFirst) {
 
     if (isFile && message.fileType.startsWith('image/')) {
         const img = document.createElement('img');
-        img.src = `/boardapi/${board}/${message.id}`;
+        img.src = boardAPI(message.id);
         newMessage.appendChild(img);
 
         img.addEventListener('click', () => {
@@ -364,9 +394,13 @@ function appendMessage(message, appendMessageToFirst) {
     } else if (isFile) {
         // 其他文件
         const filenameDisplay = document.createElement('a');
-        filenameDisplay.href = `/boardapi/${board}/${message.id}`;
+        filenameDisplay.href = boardAPI(message.id) + '?download=1';
         filenameDisplay.innerText = message.fileName;
         filenameDisplay.download = message.fileName;
+        filenameDisplay.addEventListener('click', event => {
+            event.preventDefault();
+            downloadMessage(message).catch(error => alert(error.message));
+        });
         newMessage.appendChild(filenameDisplay);
     } else {
         if (isValidURL(message.content)) {
@@ -383,10 +417,11 @@ function appendMessage(message, appendMessageToFirst) {
     const buttonsDiv = document.createElement('div');
     buttonsDiv.className = 'buttons';
 
-    if (!message.isFile || message.fileType == 'image/png') {
+    if (!message.isFile || (message.fileType === 'image/png' && window.isSecureContext && window.ClipboardItem && navigator.clipboard?.write)) {
         const copyButton = document.createElement('button');
         copyButton.className = 'btn btn-primary btn-sm';
         copyButton.title = "复制";
+        copyButton.setAttribute("aria-label", "复制");
         const copyIcon = document.createElement('i');
         copyIcon.className = 'iconfont icon-copy';
         copyButton.addEventListener('click', () => copyToClipboard(message));
@@ -394,9 +429,23 @@ function appendMessage(message, appendMessageToFirst) {
         buttonsDiv.appendChild(copyButton);
     }
 
+    if (message.isFile) {
+        const download = document.createElement('a');
+        download.className = 'btn btn-primary btn-sm';
+        download.textContent = language === 'zh' ? '下载' : 'Download';
+        download.href = boardAPI(message.id) + '?download=1';
+        download.download = message.fileName;
+        download.addEventListener('click', event => {
+            event.preventDefault();
+            downloadMessage(message).catch(error => alert(error.message));
+        });
+        buttonsDiv.appendChild(download);
+    }
+
     const deleteButton = document.createElement('button');
     deleteButton.className = 'btn btn-secondary btn-sm';
     deleteButton.title = "删除";
+    deleteButton.setAttribute("aria-label", "删除");
     const deleteIcon = document.createElement('i');
     deleteIcon.className = 'iconfont icon-remove';
     deleteButton.addEventListener('click', () => deleteMessage(message.id, newMessage));
@@ -419,7 +468,7 @@ function appendMessage(message, appendMessageToFirst) {
 
 function copyToClipboard(message) {
     if (message.isFile && message.fileType == 'image/png') {
-        const url = `/boardapi/${board}/${message.id}`
+        const url = boardAPI(message.id)
         fetch(url).then(res => {
             if (!res.ok) {
                 throw new Error(`Network response was not ok: ${res.statusText}`);
@@ -440,17 +489,9 @@ function copyToClipboard(message) {
             console.error('Failed to get messege:', error);
         });
     } else if (!message.isFile) {
-        const tempInput = document.createElement('textarea');
-        tempInput.value = message.content;
-        document.body.appendChild(tempInput);
-        tempInput.select();
-        document.execCommand('copy');
-        document.body.removeChild(tempInput);
-        if (language == 'zh') {
-            Events.fire('notify-user', '已复制到剪贴板');
-        } else {
-            Events.fire('notify-user', 'Copied to clipboard');
-        }
+        copyClipboardText(message.content).then(copied => {
+            if (copied) Events.fire('notify-user', language === 'zh' ? '已复制到剪贴板' : 'Copied to clipboard');
+        }).catch(error => console.error('Copy failed:', error));
     } else {
         if (language == 'zh') {
             Events.fire('notify-user', '不支持的文件格式');
@@ -467,7 +508,7 @@ function isValidURL(str) {
 
 function copyUrlToClipboard() {
     const urlText = document.getElementById('url').innerText;
-    navigator.clipboard.writeText(urlText).then(function () {
+    copyClipboardText(urlText).then(function () {
         if (language == 'zh') {
             Events.fire('notify-user', '已复制到剪贴板');
         } else {
@@ -480,7 +521,7 @@ function copyUrlToClipboard() {
 
 function deleteMessage(id, messageElement) {
     NProgress.start();
-    fetch(`/boardapi/` + board + `/${id}`, {
+    fetch(boardAPI(id), {
         method: 'DELETE'
     })
         .then(response => response.json())
@@ -512,7 +553,7 @@ function deleteMessage(id, messageElement) {
 
                 updateCountdown(data.data.expireAt)
 
-                snapdrop.send({type: 'board-update', board: window.board})
+
                 if (language == 'zh') {
                     Events.fire('notify-user', '剪贴板记录删除成功');
                 } else {
@@ -536,7 +577,7 @@ let language = 'zh';
 
 function loadTranslations(callback) {
     const loadJSON = (lang) => {
-        return fetch(`/css/board-${lang}.json`)
+        return fetch(AirClipboard.asset(`css/board-${lang}.json`))
             .then(response => response.json())
             .then(data => {
                 if (lang === 'en') {
@@ -702,17 +743,8 @@ function handleBlur() {
 }
 
 function navigateToBoard() {
-    const boardInput = document.getElementById("board-input");
-    const newBoard = boardInput.value.trim();
-    if (newBoard && newBoard !== board) {
-        const currentUrl = new URL(window.location.href);
-        if (currentUrl.pathname === "/") {
-            window.location.href = `${currentUrl.origin}/${newBoard}`;
-        } else {
-            const newPath = currentUrl.pathname.replace(/[^/]+$/, newBoard);
-            window.location.href = `${currentUrl.origin}${newPath}`;
-        }
-    }
+    const newBoard = AirClipboard.normalizeBoard(document.getElementById('board-input').value);
+    if (newBoard && newBoard !== board) location.href = AirClipboard.boardURL(newBoard);
 }
 
 function updateContent() {
@@ -735,10 +767,7 @@ function updateContent() {
     window.board = board
 
     // 生成二维码并展示在页面上
-    let qrcodeUrl = currentUrl
-    if (new URL(window.location.href).pathname === "/") {
-        qrcodeUrl = currentUrl + board
-    }
+    const qrcodeUrl = AirClipboard.boardURL(board);
     const qrcode = new QRCode(document.getElementById("qrcode"), {
         text: qrcodeUrl, width: 128, height: 128
     });

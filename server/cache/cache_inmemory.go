@@ -33,7 +33,7 @@ func (c *InMemoryCache) Get(key string) ([]*Message, bool) {
 		return nil, false
 	}
 
-	return item.Data, true
+	return append([]*Message(nil), item.Data...), true
 }
 
 func (c *InMemoryCache) GetExpireAt(key string) string {
@@ -51,7 +51,7 @@ func (c *InMemoryCache) GetExpireAt(key string) string {
 		return ""
 	}
 
-	return expireAt.Format("2006-01-02 15:04:05")
+	return expireAt.Format(time.RFC3339)
 }
 
 func (c *InMemoryCache) Set(key string, data []*Message, duration time.Duration) {
@@ -60,7 +60,7 @@ func (c *InMemoryCache) Set(key string, data []*Message, duration time.Duration)
 
 	expiration := time.Now().Add(duration).UnixNano()
 	c.cache[key] = cachedItem{
-		Data:       data,
+		Data:       append([]*Message(nil), data...),
 		Expiration: expiration,
 	}
 }
@@ -108,10 +108,12 @@ func (c *InMemoryCache) Clean() {
 		}
 	}
 
-	log.Printf("清理过期缓存完成，当前缓存大小：%v", c.Size())
+	log.Printf("清理过期缓存完成，当前缓存大小：%v", len(c.cache))
 }
 
 func (c *InMemoryCache) SetIp2BoardName(ip, boardName string, duration time.Duration) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	expiration := time.Now().Add(duration).UnixNano()
 	c.cacheBoardName[ip] = cachedBoardName{
 		BoardName:  boardName,
@@ -120,6 +122,8 @@ func (c *InMemoryCache) SetIp2BoardName(ip, boardName string, duration time.Dura
 }
 
 func (c *InMemoryCache) GetIp2BoardName(ip string) (string, bool) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	item, found := c.cacheBoardName[ip]
 	if !found {
 		return "", false

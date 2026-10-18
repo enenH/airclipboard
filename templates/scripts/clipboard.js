@@ -1,38 +1,19 @@
-// Polyfill for Navigator.clipboard.writeText
-if (!navigator.clipboard) {
-    navigator.clipboard = {
-        writeText: text => {
-
-            // A <span> contains the text to copy
-            const span = document.createElement('span');
-            span.textContent = text;
-            span.style.whiteSpace = 'pre'; // Preserve consecutive spaces and newlines
-
-            // Paint the span outside the viewport
-            span.style.position = 'absolute';
-            span.style.left = '-9999px';
-            span.style.top = '-9999px';
-
-            const win = window;
-            const selection = win.getSelection();
-            win.document.body.appendChild(span);
-
-            const range = win.document.createRange();
-            selection.removeAllRanges();
-            range.selectNode(span);
-            selection.addRange(range);
-
-            let success = false;
-            try {
-                success = win.document.execCommand('copy');
-            } catch (err) {
-                return Promise.error();
-            }
-
-            selection.removeAllRanges();
-            span.remove();
-
-            return Promise.resolve();
-        }
+window.copyClipboardText = function (text) {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(() => true);
     }
-}
+    const previousFocus = document.activeElement;
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.setAttribute('readonly', '');
+    input.style.cssText = 'position:fixed;left:-9999px;top:0;';
+    document.body.appendChild(input);
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (_) {}
+    input.remove();
+    if (previousFocus) previousFocus.focus();
+    if (!copied) window.prompt('请手动复制以下文本 / Copy this text:', text);
+    return Promise.resolve(copied);
+};

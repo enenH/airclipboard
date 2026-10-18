@@ -1,7 +1,7 @@
 {
   "title": "AirClipboard",
   "desc": "The easiest way to transfer files across devices",
-  "tip2": "You can be auto discovered on this network",
+  "tip2": "Devices in the same clipboard space appear here",
   "no-peers": "Open AirClipboard on another device \nOr scan the QR code on the left",
   "clipboard": "AirClipboard",
   "declaration": "Disclaimer: Please do not transmit important confidential or personal privacy here. AirClipboard is not responsible for any information leakage, loss or any other consequences.",
@@ -21,5 +21,6 @@
   "message-input": "Transfer text, pictures and files between different network devices, copy and paste here! Or edit the text here, press Shift+Enter to wrap, and press Enter to automatically add a record.",
   "desktop-instructions": "Click to send files or right click to send a message",
   "mobile-instructions": "Tap to send files or long tap to send a message",
-  "tooltip": "This is the default public clipboard space. You can customize the clipboard space name in the blue box."
+  "tooltip": "This is the default public clipboard space. You can customize the clipboard space name in the blue box.",
+  "upload-file": "Upload file"
 }
