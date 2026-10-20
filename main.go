@@ -29,7 +29,7 @@ func main() {
 	redisPassword := flag.String("redis-password", "******", "Password for the Redis server")
 	redisDB := flag.Int("redis-db", 0, "Redis database number")
 	listen := flag.String("listen", "0.0.0.0:18128", "HTTP listen address")
-	origins := flag.String("allowed-origins", "https://ac.enenh.com,https://server.enenh.com:32347,http://ac.enenh.com,http://103.236.77.86:32347", "Comma-separated browser origins")
+	origins := flag.String("allowed-origins", "http://ac.enenh.com,http://103.236.77.86:32347", "Comma-separated browser origins")
 
 	flag.Parse()
 	server.SetAllowedOrigins(strings.Split(*origins, ","))

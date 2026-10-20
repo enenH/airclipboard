@@ -1,6 +1,6 @@
 NProgress.configure({showSpinner: false});
 
-const version = 'v2.3.1-https';
+const version = 'v2.3.1-http';
 
 function boardAPI(id) {
     return AirClipboard.api('/boardapi/' + encodeURIComponent(board) + (id ? '/' + encodeURIComponent(id) : ''));
