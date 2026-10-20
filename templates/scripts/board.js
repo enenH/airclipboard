@@ -1,6 +1,6 @@
 NProgress.configure({showSpinner: false});
 
-const version = 'v2.3.1-http';
+const version = 'v2.3.1-https';
 
 function boardAPI(id) {
     return AirClipboard.api('/boardapi/' + encodeURIComponent(board) + (id ? '/' + encodeURIComponent(id) : ''));
@@ -303,12 +303,21 @@ function fetchMessages() {
         });
 }
 
-function addMessage() {
+async function addMessage() {
     const input = document.getElementById('messageInput');
-    const messageText = input.value.trim();
-    if (messageText) {
-        sendMessage(messageText);
-        input.value = '';
+    const button = document.getElementById('sendButton');
+    const submittedValue = input.value;
+    const messageText = submittedValue.trim();
+    if (!messageText || button.disabled) return;
+
+    button.disabled = true;
+    try {
+        const sent = await sendMessage(messageText);
+        if (sent && input.value === submittedValue) {
+            input.value = '';
+        }
+    } finally {
+        button.disabled = false;
     }
 }
 
@@ -334,14 +343,17 @@ function sendMessage(content) {
                 } else {
                     Events.fire('notify-user', 'Clipboard record added successfully');
                 }
+                return true;
             } else {
                 console.error('Error adding message:', data);
                 alert(data.message);
+                return false;
             }
         })
         .catch(error => {
             console.error('Error adding message:', error);
             alert('Error adding message: ' + error);
+            return false;
         })
         .finally(() => {
             // Complete the progress bar
