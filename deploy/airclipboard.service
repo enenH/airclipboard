@@ -1,5 +1,5 @@
 [Unit]
-Description=AirClipboard HTTP backend
+Description=AirClipboard backend
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 User=airclipboard
 Group=airclipboard
 WorkingDirectory=/var/lib/airclipboard
-ExecStart=/opt/airclipboard/current/airclipboard --listen=127.0.0.1:18128 --allowed-origins=http://ac.enenh.com,http://103.236.77.86:32347
+ExecStart=/opt/airclipboard/current/airclipboard --listen=127.0.0.1:18128 --allowed-origins=https://ac.enenh.com,https://server.enenh.com:32347,http://ac.enenh.com,http://103.236.77.86:32347
 Environment=GIN_MODE=release
 Environment=TZ=Asia/Shanghai
 Restart=on-failure
