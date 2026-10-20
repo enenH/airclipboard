@@ -2,6 +2,8 @@
 
 English | [中文](./README_zh.md)
 
+Online access (HTTP): [http://ac.enenh.com](http://ac.enenh.com)
+
 ---
 
 [AirClipboard](https://airclipbd.com) combines the convenience of Snapdrop with the functionality of an online clipboard, enabling seamless file sharing and clipboard management between devices.
