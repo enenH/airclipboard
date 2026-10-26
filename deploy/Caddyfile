@@ -1,0 +1,21 @@
+ac-api.enenh.com {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+		}
+	}
+
+	encode gzip
+	header {
+		X-Content-Type-Options nosniff
+		Cache-Control no-store
+	}
+
+	request_body {
+		max_size 30MB
+	}
+
+	reverse_proxy 127.0.0.1:18128 {
+		header_up -CF-Connecting-IP
+	}
+}

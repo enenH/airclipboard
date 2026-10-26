@@ -2,7 +2,15 @@
 
 English | [中文](./README_zh.md)
 
-Online access (HTTP): [http://ac.enenh.com](http://ac.enenh.com)
+Online access (HTTPS): [https://ac.enenh.com](https://ac.enenh.com)
+
+The frontend remains on GitHub Pages. The backend runs at `https://ac-api.enenh.com`
+with HTTPS and WSS; `templates/scripts/config.js` sets its public address.
+On the backend host, install `deploy/airclipboard.service` as a systemd service
+and `deploy/Caddyfile` as `/etc/caddy/Caddyfile`. The Go service listens only on
+`127.0.0.1:18128`; Caddy serves ports 80/443 and renews the TLS certificate.
+The service uses the default in-memory cache, so clipboard records expire as
+configured by the application and are cleared when the backend restarts.
 
 ---
 

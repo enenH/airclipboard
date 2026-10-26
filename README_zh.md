@@ -2,7 +2,13 @@
 
 [English](./README.md) | 中文
 
-在线访问（HTTP）：[http://ac.enenh.com](http://ac.enenh.com)
+在线访问（HTTPS）：[https://ac.enenh.com](https://ac.enenh.com)
+
+前端继续托管在 GitHub Pages。后端地址为 `https://ac-api.enenh.com`，使用 HTTPS 和 WSS，
+由 `templates/scripts/config.js` 配置。在后端服务器上，将 `deploy/airclipboard.service`
+安装为 systemd 服务，将 `deploy/Caddyfile` 安装到 `/etc/caddy/Caddyfile`。
+Go 服务只监听 `127.0.0.1:18128`；Caddy 负责 80/443 端口及 TLS 证书自动续签。
+服务使用默认的内存缓存，剪贴板记录按程序设定过期，后端重启时会清空。
 
 ---
 

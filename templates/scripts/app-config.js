@@ -1,9 +1,10 @@
 (() => {
     const config = window.AIRCLIPBOARD_CONFIG || {};
-    if (config.httpOnly && location.protocol === 'https:') {
+    if (config.httpsOnly && location.protocol === 'http:') {
         const target = new URL(location.href);
-        target.protocol = 'http:';
+        target.protocol = 'https:';
         location.replace(target.href);
+        return;
     }
     const scriptBase = new URL('../', document.currentScript.src);
     const apiBase = (config.apiBase || location.origin).replace(/\/+$/, '');
